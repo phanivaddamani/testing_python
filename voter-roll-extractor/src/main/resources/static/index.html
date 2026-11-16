@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voter Roll to Excel</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --ink:#1d2330; --muted:#667085; --line:#d9dde5; --accent:#1f6f50; --err:#b42318; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width:640px; margin:48px auto; padding:0 16px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  p.lead { color:var(--muted); margin:0 0 24px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:24px; }
+  .drop { border:2px dashed var(--line); border-radius:8px; padding:32px 16px; text-align:center; cursor:pointer; transition:.15s; }
+  .drop.over { border-color:var(--accent); background:#eef7f2; }
+  .drop strong { color:var(--accent); }
+  #list { margin:12px 0 0; padding:0; list-style:none; font-size:14px; color:var(--muted); }
+  label.opt { display:flex; gap:8px; align-items:flex-start; margin:16px 0; font-size:14px; }
+  label.opt span small { display:block; color:var(--muted); }
+  button { width:100%; padding:12px; font-size:15px; font-weight:600; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  #status { margin-top:16px; font-size:14px; min-height:1.5em; }
+  #status.err { color:var(--err); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Voter Roll → Excel</h1>
+  <p class="lead">Upload electoral roll PDFs (or page images/screenshots). Each voter card becomes one row.</p>
+
+  <div class="card">
+    <div class="drop" id="drop">
+      <div><strong>Choose files</strong> or drag them here</div>
+      <div style="color:var(--muted);font-size:13px;margin-top:4px">PDF, PNG, JPG, TIFF · multiple files go into one sheet</div>
+      <input id="files" type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp" hidden>
+    </div>
+    <ul id="list"></ul>
+
+    <label class="opt">
+      <input type="checkbox" id="forceOcr">
+      <span>Force OCR on every page
+        <small>Use only if the result is empty or garbled — some PDFs embed text in unreadable fonts. Slower.</small></span>
+    </label>
+
+    <button id="go" disabled>Convert to Excel</button>
+    <div id="status"></div>
+  </div>
+</main>
+
+<script>
+  const input = document.getElementById('files');
+  const drop = document.getElementById('drop');
+  const list = document.getElementById('list');
+  const go = document.getElementById('go');
+  const status = document.getElementById('status');
+  let files = [];
+
+  function setFiles(fl) {
+    files = Array.from(fl);
+    list.innerHTML = files.map(f => `<li>${f.name} · ${(f.size / 1024 / 1024).toFixed(2)} MB</li>`).join('');
+    go.disabled = files.length === 0;
+    status.textContent = ''; status.className = '';
+  }
+
+  drop.onclick = () => input.click();
+  input.onchange = () => setFiles(input.files);
+  ['dragenter', 'dragover'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', ev => setFiles(ev.dataTransfer.files));
+
+  go.onclick = async () => {
+    const fd = new FormData();
+    files.forEach(f => fd.append('files', f));
+    fd.append('forceOcr', document.getElementById('forceOcr').checked);
+    go.disabled = true; status.className = ''; status.textContent = 'Reading files… (scanned pages take a few seconds each)';
+
+    try {
+      const res = await fetch('/api/convert', { method: 'POST', body: fd });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `Server error ${res.status}`);
+      }
+      const count = res.headers.get('X-Record-Count');
+      const warnings = +res.headers.get('X-Warning-Count');
+      const name = (res.headers.get('Content-Disposition') || '').match(/filename="?([^"]+)"?/)?.[1] || 'voters.xlsx';
+      const blob = await res.blob();
+      const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+      a.click(); URL.revokeObjectURL(a.href);
+      status.textContent = `Done — ${count} voters extracted.` +
+        (warnings ? ` ${warnings} warning(s): see the "Warnings" sheet and yellow rows.` : '');
+    } catch (e) {
+      status.className = 'err'; status.textContent = e.message;
+    } finally {
+      go.disabled = false;
+    }
+  };
+</script>
+</body>
+</html>
